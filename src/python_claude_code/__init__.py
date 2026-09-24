@@ -3,7 +3,7 @@ from anthropic.types import MessageParam
 from dotenv import load_dotenv
 
 from .loop import run_loop
-from .tools import AgentToolRuntime, ReadFile
+from .tools import AgentToolRuntime, Bash, Edit, ReadFile, Write
 
 load_dotenv()
 
@@ -12,7 +12,7 @@ model = "claude-haiku-4-5-20251001"
 
 
 messages: list[MessageParam] = []
-agent_tool_runtime = AgentToolRuntime(tools=[ReadFile])
+agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
 
 
 def main() -> None:
