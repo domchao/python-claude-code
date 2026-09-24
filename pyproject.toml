@@ -15,3 +15,8 @@ python-claude-code = "python_claude_code:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.8",
+]
