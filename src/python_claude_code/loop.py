@@ -22,7 +22,7 @@ def run_loop(
 ) -> ToolLoopResult:
     response = client.messages.create(
         model=model,
-        max_tokens=1000,
+        max_tokens=8192,
         messages=messages,
         tools=tool_runtime.tool_specs,
     )
