@@ -10,6 +10,7 @@ from python_claude_code.tools import (
     AgentToolRuntime,
     Bash,
     Edit,
+    FileMutatingTool,
     ReadFile,
     ToolResult,
     Write,
@@ -49,6 +50,18 @@ class NativeAsync(AgentTool):
         return ToolResult(result="native", error=None)
 
 
+class SlowAppend(FileMutatingTool):
+    """Read-modify-write with a delay in the middle: loses updates if unserialized."""
+
+    def run_sync(self) -> ToolResult:
+        with open(self.filepath) as f:
+            content = f.read()
+        time.sleep(0.05)
+        with open(self.filepath, "w") as f:
+            f.write(content + "x")
+        return ToolResult(result="ok", error=None)
+
+
 class NoImpl(AgentTool):
     """Implements neither run nor run_sync."""
 
@@ -66,6 +79,7 @@ def runtime() -> AgentToolRuntime:
             SlowSync,
             NativeAsync,
             NoImpl,
+            SlowAppend,
         ]
     )
 
@@ -129,6 +143,60 @@ class TestAsyncRun:
         )
         assert time.monotonic() - start < 0.55  # ~0.3 concurrent, 0.6 serial
         assert [r.result for r in results] == ["done", "done"]
+
+
+class TestPathLocking:
+    async def test_same_path_calls_are_serialized(self, runtime, tmp_path: Path):
+        f = tmp_path / "a.txt"
+        f.write_text("")
+        await asyncio.gather(
+            *(runtime.run_tool("SlowAppend", {"filepath": str(f)}) for _ in range(5))
+        )
+        assert f.read_text() == "xxxxx"  # would be "x" if updates were lost
+
+    async def test_different_spellings_of_a_path_share_a_lock(
+        self, runtime, tmp_path: Path
+    ):
+        f = tmp_path / "a.txt"
+        f.write_text("")
+        alias = str(tmp_path / "." / "a.txt")
+        await asyncio.gather(
+            runtime.run_tool("SlowAppend", {"filepath": str(f)}),
+            runtime.run_tool("SlowAppend", {"filepath": alias}),
+        )
+        assert f.read_text() == "xx"
+
+    async def test_different_paths_run_concurrently(self, runtime, tmp_path: Path):
+        files = [tmp_path / "a.txt", tmp_path / "b.txt"]
+        for f in files:
+            f.write_text("")
+        start = time.monotonic()
+        await asyncio.gather(
+            *(runtime.run_tool("SlowAppend", {"filepath": str(f)}) for f in files)
+        )
+        assert time.monotonic() - start < 0.09  # ~0.05 concurrent, 0.10 serial
+
+    async def test_concurrent_edits_to_one_file_are_both_applied(
+        self, runtime, tmp_path: Path
+    ):
+        f = tmp_path / "a.txt"
+        f.write_text("one two")
+        results = await asyncio.gather(
+            runtime.run_tool(
+                "Edit", {"filepath": str(f), "old_str": "one", "new_str": "1"}
+            ),
+            runtime.run_tool(
+                "Edit", {"filepath": str(f), "old_str": "two", "new_str": "2"}
+            ),
+        )
+        assert all(r.error is None for r in results)
+        assert f.read_text() == "1 2"
+
+    async def test_lock_is_released_after_failure(self, runtime, tmp_path: Path):
+        f = tmp_path / "missing.txt"
+        args = {"filepath": str(f), "old_str": "a", "new_str": "b"}
+        assert (await runtime.run_tool("Edit", args)).error
+        assert (await runtime.run_tool("Edit", args)).error  # would hang if leaked
 
 
 class TestReadFile:

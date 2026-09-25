@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import os
 import signal
+import weakref
 from functools import cached_property
 from typing import Any
 
@@ -22,6 +23,30 @@ class AgentTool(BaseModel):
     async def run(self) -> ToolResult:
         """Override directly for tools that are natively async (e.g. Bash)."""
         return await asyncio.to_thread(self.run_sync)
+
+
+_path_locks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[str, asyncio.Lock]
+] = weakref.WeakKeyDictionary()
+
+
+def path_lock(filepath: str) -> asyncio.Lock:
+    """Return the lock guarding a file, so concurrent tool calls can't lose writes.
+
+    asyncio.Lock is bound to one event loop, so locks are kept per running loop.
+    """
+    locks = _path_locks.setdefault(asyncio.get_running_loop(), {})
+    return locks.setdefault(os.path.realpath(filepath), asyncio.Lock())
+
+
+class FileMutatingTool(AgentTool):
+    """Base for tools that modify a file; runs are serialized per file path."""
+
+    filepath: str
+
+    async def run(self) -> ToolResult:
+        async with path_lock(self.filepath):
+            return await super().run()
 
 
 class AgentToolRuntime(BaseModel):
@@ -75,7 +100,7 @@ class ReadFile(AgentTool):
             )
 
 
-class Write(AgentTool):
+class Write(FileMutatingTool):
     """Write string content to a filepath"""
 
     filepath: str = Field(description="Filepath of file to write to.")
@@ -101,7 +126,7 @@ class Write(AgentTool):
             )
 
 
-class Edit(AgentTool):
+class Edit(FileMutatingTool):
     """Replace a string in a file."""
 
     filepath: str = Field(description="Filepath of file to edit")

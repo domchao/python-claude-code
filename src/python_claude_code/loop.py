@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -36,14 +37,20 @@ async def run_loop(
 
     # Check for and handle model tool use
     if response.stop_reason == "tool_use":
-        tool_responses: list[ToolResultBlockParam] = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
+        tool_blocks = [b for b in response.content if b.type == "tool_use"]
+
+        for block in tool_blocks:
             print(f"Tool Call: {block.name}:{block.input}")
-            tool_result = await tool_runtime.run_tool(
-                block.name, cast(dict[str, Any], block.input)
+
+        results = await asyncio.gather(
+            *(
+                tool_runtime.run_tool(block.name, cast(dict[str, Any], block.input))
+                for block in tool_blocks
             )
+        )
+
+        tool_responses: list[ToolResultBlockParam] = []
+        for block, tool_result in zip(tool_blocks, results):
             tool_responses.append(
                 {
                     "type": "tool_result",

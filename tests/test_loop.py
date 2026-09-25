@@ -1,3 +1,5 @@
+import asyncio
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +23,16 @@ class Fail(AgentTool):
         return ToolResult(result=None, error="nope")
 
 
+class Sleepy(AgentTool):
+    """Natively async tool that takes `delay` seconds."""
+
+    delay: float
+
+    async def run(self) -> ToolResult:
+        await asyncio.sleep(self.delay)
+        return ToolResult(result=f"slept:{self.delay}", error=None)
+
+
 def text_block(text: str) -> SimpleNamespace:
     return SimpleNamespace(type="text", text=text)
 
@@ -42,7 +54,7 @@ class FakeClient:
         return self._response
 
 
-runtime = AgentToolRuntime(tools=[Echo, Fail])
+runtime = AgentToolRuntime(tools=[Echo, Fail, Sleepy])
 
 
 async def test_plain_text_response():
@@ -109,3 +121,27 @@ async def test_tool_use_stop_reason_without_tool_blocks():
     result = await run_loop(client, "m", [], runtime)
 
     assert result.tool_results == []
+
+
+async def test_tool_calls_run_in_parallel_and_keep_block_order():
+    # The first call is the slowest, so it finishes last but must be listed first.
+    client = FakeClient(
+        [
+            tool_block("t1", "Sleepy", {"delay": 0.3}),
+            tool_block("t2", "Sleepy", {"delay": 0.2}),
+            tool_block("t3", "Sleepy", {"delay": 0.1}),
+        ],
+        "tool_use",
+    )
+
+    start = time.monotonic()
+    result = await run_loop(client, "m", [], runtime)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5  # ~0.3 in parallel, 0.6 if sequential
+    assert [r["tool_use_id"] for r in result.tool_results] == ["t1", "t2", "t3"]
+    assert [r["content"] for r in result.tool_results] == [
+        "slept:0.3",
+        "slept:0.2",
+        "slept:0.1",
+    ]
