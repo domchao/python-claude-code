@@ -40,6 +40,7 @@ def run_loop(
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            print(f"Tool Call: {block.name}:{block.input}")
             tool_result = tool_runtime.run_tool(
                 block.name, cast(dict[str, Any], block.input)
             )
