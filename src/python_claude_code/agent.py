@@ -72,3 +72,18 @@ class Agent:
             )
 
         return ToolLoopResult(assistant_message=assistant_message, text=text)
+
+    async def loop(self, messages: list[MessageParam]) -> None:
+        """Step until the model stops calling tools, appending to `messages`."""
+        while True:
+            tool_loop_result = await self.step(messages)
+            assistant_message = tool_loop_result.assistant_message
+            messages.append(assistant_message)
+            if tool_loop_result.tool_results:
+                messages.append(
+                    {"role": "user", "content": tool_loop_result.tool_results}
+                )
+            else:
+                if tool_loop_result.text:
+                    print(f"\nAssistant: {tool_loop_result.text}")
+                break

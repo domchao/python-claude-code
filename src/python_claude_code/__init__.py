@@ -24,18 +24,7 @@ async def amain() -> None:
 
         messages.append({"role": "user", "content": user_input})
 
-        while True:
-            tool_loop_result = await agent.step(messages)
-            assistant_message = tool_loop_result.assistant_message
-            messages.append(assistant_message)
-            if tool_loop_result.tool_results:
-                messages.append(
-                    {"role": "user", "content": tool_loop_result.tool_results}
-                )
-            else:
-                if tool_loop_result.text:
-                    print(f"\nAssistant: {tool_loop_result.text}")
-                break
+        await agent.loop(messages)
 
 
 def main() -> None:

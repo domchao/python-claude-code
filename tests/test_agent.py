@@ -42,16 +42,31 @@ def tool_block(id: str, name: str, input: dict[str, Any]) -> SimpleNamespace:
 
 
 class FakeClient:
-    """Stands in for anthropic.AsyncAnthropic; returns a canned response and records calls."""
+    """Stands in for anthropic.AsyncAnthropic; returns a canned response and records calls.
 
-    def __init__(self, content: list[SimpleNamespace], stop_reason: str):
+    Pass `then=[...]` to script later responses as (content, stop_reason) pairs;
+    the last response repeats once the script runs out.
+    """
+
+    def __init__(
+        self,
+        content: list[SimpleNamespace],
+        stop_reason: str,
+        then: list[tuple[list[SimpleNamespace], str]] | None = None,
+    ):
         self.calls: list[dict[str, Any]] = []
-        self._response = SimpleNamespace(content=content, stop_reason=stop_reason)
+        self._responses = [
+            SimpleNamespace(content=c, stop_reason=r)
+            for c, r in [(content, stop_reason), *(then or [])]
+        ]
+        self._response = self._responses[0]
         self.messages = SimpleNamespace(create=self._create)
 
     async def _create(self, **kwargs: Any) -> SimpleNamespace:
-        self.calls.append(kwargs)
-        return self._response
+        # Record a snapshot: the agent mutates the messages list between calls.
+        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
+        index = min(len(self.calls), len(self._responses)) - 1
+        return self._responses[index]
 
 
 runtime = AgentToolRuntime(tools=[Echo, Fail, Sleepy])
@@ -77,7 +92,7 @@ async def test_request_passes_model_messages_and_tools():
 
     (call,) = client.calls
     assert call["model"] == "test-model"
-    assert call["messages"] is messages
+    assert call["messages"] == messages
     assert call["tools"] == runtime.tool_specs
 
 
@@ -158,3 +173,51 @@ async def test_execute_tool_builds_tool_result_block():
     assert err == {"type": "tool_result", "tool_use_id": "t2", "content": "nope"}
     assert unknown["tool_use_id"] == "t3"
     assert "Unknown tool 'Nope'" in unknown["content"]
+
+
+async def test_loop_runs_tools_until_the_model_finishes(capsys):
+    client = FakeClient(
+        [tool_block("t1", "Echo", {"text": "a"})],
+        "tool_use",
+        then=[([text_block("all done")], "end_turn")],
+    )
+    messages = [{"role": "user", "content": "go"}]
+
+    await Agent(runtime, model="m", client=client).loop(messages)
+
+    assert len(client.calls) == 2
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "echo:a"}
+    ]
+    assert messages[3]["content"][0].text == "all done"
+    # The second request must include the tool results from the first turn.
+    assert client.calls[1]["messages"][-1] == messages[2]
+    assert "Assistant: all done" in capsys.readouterr().out
+
+
+async def test_loop_chains_multiple_tool_rounds():
+    client = FakeClient(
+        [tool_block("t1", "Echo", {"text": "a"})],
+        "tool_use",
+        then=[
+            ([tool_block("t2", "Echo", {"text": "b"})], "tool_use"),
+            ([text_block("done")], "end_turn"),
+        ],
+    )
+    messages = [{"role": "user", "content": "go"}]
+
+    await Agent(runtime, model="m", client=client).loop(messages)
+
+    assert len(client.calls) == 3
+    assert len(messages) == 6
+
+
+async def test_loop_without_tools_makes_one_call():
+    client = FakeClient([text_block("hi")], "end_turn")
+    messages = [{"role": "user", "content": "hello"}]
+
+    await Agent(runtime, model="m", client=client).loop(messages)
+
+    assert len(client.calls) == 1
+    assert [m["role"] for m in messages] == ["user", "assistant"]
