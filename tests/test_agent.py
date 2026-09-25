@@ -3,7 +3,7 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
-from python_claude_code.loop import run_loop
+from python_claude_code.agent import Agent
 from python_claude_code.tools import AgentTool, AgentToolRuntime, ToolResult
 
 
@@ -61,7 +61,7 @@ async def test_plain_text_response():
     client = FakeClient([text_block("hi"), text_block("there")], "end_turn")
     messages = [{"role": "user", "content": "hello"}]
 
-    result = await run_loop(client, "test-model", messages, runtime)
+    result = await Agent(runtime, model="test-model", client=client).step(messages)
 
     assert result.text == "hi\nthere"
     assert result.tool_results is None
@@ -73,7 +73,7 @@ async def test_request_passes_model_messages_and_tools():
     client = FakeClient([text_block("hi")], "end_turn")
     messages = [{"role": "user", "content": "hello"}]
 
-    await run_loop(client, "test-model", messages, runtime)
+    await Agent(runtime, model="test-model", client=client).step(messages)
 
     (call,) = client.calls
     assert call["model"] == "test-model"
@@ -91,7 +91,7 @@ async def test_tool_use_runs_tools_and_returns_results():
         "tool_use",
     )
 
-    result = await run_loop(client, "m", [], runtime)
+    result = await Agent(runtime, model="m", client=client).step([])
 
     assert result.text == "calling"
     assert result.tool_results == [
@@ -109,7 +109,7 @@ async def test_tool_errors_are_returned_as_content():
         "tool_use",
     )
 
-    result = await run_loop(client, "m", [], runtime)
+    result = await Agent(runtime, model="m", client=client).step([])
 
     assert result.tool_results[0]["content"] == "nope"
     assert "Unknown tool 'Missing'" in result.tool_results[1]["content"]
@@ -118,7 +118,7 @@ async def test_tool_errors_are_returned_as_content():
 async def test_tool_use_stop_reason_without_tool_blocks():
     client = FakeClient([text_block("odd")], "tool_use")
 
-    result = await run_loop(client, "m", [], runtime)
+    result = await Agent(runtime, model="m", client=client).step([])
 
     assert result.tool_results == []
 
@@ -135,7 +135,7 @@ async def test_tool_calls_run_in_parallel_and_keep_block_order():
     )
 
     start = time.monotonic()
-    result = await run_loop(client, "m", [], runtime)
+    result = await Agent(runtime, model="m", client=client).step([])
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.5  # ~0.3 in parallel, 0.6 if sequential

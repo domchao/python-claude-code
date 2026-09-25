@@ -1,20 +1,16 @@
 import asyncio
 
-import anthropic
 from anthropic.types import MessageParam
 from dotenv import load_dotenv
 
-from .loop import run_loop
+from .agent import Agent
 from .tools import AgentToolRuntime, Bash, Edit, ReadFile, Write
 
 load_dotenv()
 
-client = anthropic.AsyncAnthropic()
-model = "claude-haiku-4-5-20251001"
-
-
 messages: list[MessageParam] = []
 agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
+agent = Agent(agent_tool_runtime)
 
 
 async def amain() -> None:
@@ -29,12 +25,7 @@ async def amain() -> None:
         messages.append({"role": "user", "content": user_input})
 
         while True:
-            tool_loop_result = await run_loop(
-                client=client,
-                model=model,
-                messages=messages,
-                tool_runtime=agent_tool_runtime,
-            )
+            tool_loop_result = await agent.step(messages)
             assistant_message = tool_loop_result.assistant_message
             messages.append(assistant_message)
             if tool_loop_result.tool_results:
