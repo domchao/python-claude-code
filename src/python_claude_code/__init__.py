@@ -8,12 +8,8 @@ from .tools import AgentToolRuntime, Bash, Edit, ReadFile, Write
 
 load_dotenv()
 
-messages: list[MessageParam] = []
-agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
-agent = Agent(agent_tool_runtime)
 
-
-async def amain() -> None:
+async def amain(agent: Agent, messages: list[MessageParam]) -> None:
     print("Type 'exit' or 'quit' to stop.")
     while True:
         user_input = (await asyncio.to_thread(input, "\nYou: ")).strip()
@@ -28,4 +24,7 @@ async def amain() -> None:
 
 
 def main() -> None:
-    asyncio.run(amain())
+    messages: list[MessageParam] = []
+    agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
+    agent = Agent(agent_tool_runtime)
+    asyncio.run(amain(agent, messages))
