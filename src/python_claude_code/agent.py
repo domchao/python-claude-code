@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, ToolResultBlockParam
+from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
 
 from .tools import AgentToolRuntime
 
@@ -28,6 +28,19 @@ class Agent:
         self.client = client if client is not None else AsyncAnthropic()
         self.max_tokens = max_tokens
 
+    async def execute_tool(self, block: ToolUseBlock) -> ToolResultBlockParam:
+        """Run one tool call and build its tool_result block."""
+        print(f"Tool Call: {block.name}:{block.input}")
+        tool_result = await self.tool_runtime.run_tool(
+            block.name, cast(dict[str, Any], block.input)
+        )
+        print(f"tool result: {tool_result}")
+        return {
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": tool_result.result or tool_result.error or "",
+        }
+
     async def step(self, messages: list[MessageParam]) -> ToolLoopResult:
         response = await self.client.messages.create(
             model=self.model,
@@ -48,29 +61,9 @@ class Agent:
         # Check for and handle model tool use
         if response.stop_reason == "tool_use":
             tool_blocks = [b for b in response.content if b.type == "tool_use"]
-
-            for block in tool_blocks:
-                print(f"Tool Call: {block.name}:{block.input}")
-
-            results = await asyncio.gather(
-                *(
-                    self.tool_runtime.run_tool(
-                        block.name, cast(dict[str, Any], block.input)
-                    )
-                    for block in tool_blocks
-                )
+            tool_responses = list(
+                await asyncio.gather(*(self.execute_tool(b) for b in tool_blocks))
             )
-
-            tool_responses: list[ToolResultBlockParam] = []
-            for block, tool_result in zip(tool_blocks, results):
-                tool_responses.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": tool_result.result or tool_result.error or "",
-                    }
-                )
-                print(f"tool result: {tool_result}")
 
             return ToolLoopResult(
                 assistant_message=assistant_message,

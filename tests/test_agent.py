@@ -145,3 +145,16 @@ async def test_tool_calls_run_in_parallel_and_keep_block_order():
         "slept:0.2",
         "slept:0.1",
     ]
+
+
+async def test_execute_tool_builds_tool_result_block():
+    agent = Agent(runtime, client=FakeClient([], "end_turn"))
+
+    ok = await agent.execute_tool(tool_block("t1", "Echo", {"text": "a"}))
+    err = await agent.execute_tool(tool_block("t2", "Fail", {}))
+    unknown = await agent.execute_tool(tool_block("t3", "Nope", {}))
+
+    assert ok == {"type": "tool_result", "tool_use_id": "t1", "content": "echo:a"}
+    assert err == {"type": "tool_result", "tool_use_id": "t2", "content": "nope"}
+    assert unknown["tool_use_id"] == "t3"
+    assert "Unknown tool 'Nope'" in unknown["content"]
