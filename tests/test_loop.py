@@ -10,14 +10,14 @@ class Echo(AgentTool):
 
     text: str
 
-    def run(self) -> ToolResult:
+    def run_sync(self) -> ToolResult:
         return ToolResult(result=f"echo:{self.text}", error=None)
 
 
 class Fail(AgentTool):
     """Always returns an error."""
 
-    def run(self) -> ToolResult:
+    def run_sync(self) -> ToolResult:
         return ToolResult(result=None, error="nope")
 
 
@@ -30,14 +30,14 @@ def tool_block(id: str, name: str, input: dict[str, Any]) -> SimpleNamespace:
 
 
 class FakeClient:
-    """Stands in for anthropic.Client; returns a canned response and records calls."""
+    """Stands in for anthropic.AsyncAnthropic; returns a canned response and records calls."""
 
     def __init__(self, content: list[SimpleNamespace], stop_reason: str):
         self.calls: list[dict[str, Any]] = []
         self._response = SimpleNamespace(content=content, stop_reason=stop_reason)
         self.messages = SimpleNamespace(create=self._create)
 
-    def _create(self, **kwargs: Any) -> SimpleNamespace:
+    async def _create(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
         return self._response
 
@@ -45,11 +45,11 @@ class FakeClient:
 runtime = AgentToolRuntime(tools=[Echo, Fail])
 
 
-def test_plain_text_response():
+async def test_plain_text_response():
     client = FakeClient([text_block("hi"), text_block("there")], "end_turn")
     messages = [{"role": "user", "content": "hello"}]
 
-    result = run_loop(client, "test-model", messages, runtime)
+    result = await run_loop(client, "test-model", messages, runtime)
 
     assert result.text == "hi\nthere"
     assert result.tool_results is None
@@ -57,11 +57,11 @@ def test_plain_text_response():
     assert result.assistant_message["content"] is client._response.content
 
 
-def test_request_passes_model_messages_and_tools():
+async def test_request_passes_model_messages_and_tools():
     client = FakeClient([text_block("hi")], "end_turn")
     messages = [{"role": "user", "content": "hello"}]
 
-    run_loop(client, "test-model", messages, runtime)
+    await run_loop(client, "test-model", messages, runtime)
 
     (call,) = client.calls
     assert call["model"] == "test-model"
@@ -69,7 +69,7 @@ def test_request_passes_model_messages_and_tools():
     assert call["tools"] == runtime.tool_specs
 
 
-def test_tool_use_runs_tools_and_returns_results():
+async def test_tool_use_runs_tools_and_returns_results():
     client = FakeClient(
         [
             text_block("calling"),
@@ -79,7 +79,7 @@ def test_tool_use_runs_tools_and_returns_results():
         "tool_use",
     )
 
-    result = run_loop(client, "m", [], runtime)
+    result = await run_loop(client, "m", [], runtime)
 
     assert result.text == "calling"
     assert result.tool_results == [
@@ -88,7 +88,7 @@ def test_tool_use_runs_tools_and_returns_results():
     ]
 
 
-def test_tool_errors_are_returned_as_content():
+async def test_tool_errors_are_returned_as_content():
     client = FakeClient(
         [
             tool_block("t1", "Fail", {}),
@@ -97,15 +97,15 @@ def test_tool_errors_are_returned_as_content():
         "tool_use",
     )
 
-    result = run_loop(client, "m", [], runtime)
+    result = await run_loop(client, "m", [], runtime)
 
     assert result.tool_results[0]["content"] == "nope"
     assert "Unknown tool 'Missing'" in result.tool_results[1]["content"]
 
 
-def test_tool_use_stop_reason_without_tool_blocks():
+async def test_tool_use_stop_reason_without_tool_blocks():
     client = FakeClient([text_block("odd")], "tool_use")
 
-    result = run_loop(client, "m", [], runtime)
+    result = await run_loop(client, "m", [], runtime)
 
     assert result.tool_results == []

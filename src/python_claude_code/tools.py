@@ -1,5 +1,7 @@
+import asyncio
+import contextlib
 import os
-import subprocess
+import signal
 from functools import cached_property
 from typing import Any
 
@@ -13,9 +15,13 @@ class ToolResult(BaseModel):
 
 
 class AgentTool(BaseModel):
-    def run(self) -> ToolResult:
-        """Override this in subclasses to define tool logic."""
+    def run_sync(self) -> ToolResult:
+        """Override for blocking tools; runs in a worker thread."""
         raise NotImplementedError
+
+    async def run(self) -> ToolResult:
+        """Override directly for tools that are natively async (e.g. Bash)."""
+        return await asyncio.to_thread(self.run_sync)
 
 
 class AgentToolRuntime(BaseModel):
@@ -38,7 +44,7 @@ class AgentToolRuntime(BaseModel):
             "input_schema": model.model_json_schema(),
         }
 
-    def run_tool(self, tool_name: str, args: dict[str, Any]) -> ToolResult:
+    async def run_tool(self, tool_name: str, args: dict[str, Any]) -> ToolResult:
         tool_cls = self.tool_registry.get(tool_name)
         if tool_cls is None:
             return ToolResult(result=None, error=f"Unknown tool '{tool_name}'")
@@ -49,7 +55,7 @@ class AgentToolRuntime(BaseModel):
                 result=None, error=f"Invalid arguments for '{tool_name}': {exc}"
             )
         try:
-            return tool_fn.run()
+            return await tool_fn.run()
         except Exception as exc:  # noqa: BLE001 - tool errors are reported to the model, not raised
             return ToolResult(result=None, error=f"Tool '{tool_name}' failed: {exc}")
 
@@ -59,7 +65,7 @@ class ReadFile(AgentTool):
 
     filepath: str = Field(description="Filepath of file to read.")
 
-    def run(self) -> ToolResult:
+    def run_sync(self) -> ToolResult:
         try:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 return ToolResult(result=f.read(), error=None)
@@ -75,7 +81,7 @@ class Write(AgentTool):
     filepath: str = Field(description="Filepath of file to write to.")
     content: str = Field(description="Content to write to file.")
 
-    def run(self) -> ToolResult:
+    def run_sync(self) -> ToolResult:
         try:
             parent = os.path.dirname(self.filepath)
             if parent:
@@ -103,7 +109,7 @@ class Edit(AgentTool):
     new_str: str = Field(description="The new string")
     replace_all: bool = False
 
-    def run(self) -> ToolResult:
+    def run_sync(self) -> ToolResult:
         if not os.path.exists(self.filepath) or not os.path.isfile(self.filepath):
             return ToolResult(
                 result=None,
@@ -159,7 +165,7 @@ class Bash(AgentTool):
     working_dir: str = "."
     timeout_seconds: int = 30
 
-    def run(self) -> ToolResult:
+    async def run(self) -> ToolResult:
         if self.timeout_seconds <= 0:
             return ToolResult(
                 result=None,
@@ -173,31 +179,41 @@ class Bash(AgentTool):
             )
 
         try:
-            completed = subprocess.run(
+            proc = await asyncio.create_subprocess_shell(
                 self.command,
-                shell=True,
                 cwd=self.working_dir,
-                text=True,
-                capture_output=True,
-                timeout=self.timeout_seconds,
-                check=False,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # own process group, so we can kill children too
             )
+        except OSError as e:
+            return ToolResult(result=None, error=f"Bash execution failed: {e}")
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.timeout_seconds
+            )
+        except TimeoutError:
+            await self._kill(proc)
             return ToolResult(
-                error=None,
-                result=(
-                    "Executed command successfully\n\n"
-                    "<output>\n"
-                    f"{completed.stdout}{completed.stderr}"
-                    "</output>"
-                ),
+                result=None, error=f"Command timed out after {self.timeout_seconds}s"
             )
-        except subprocess.TimeoutExpired:
-            return ToolResult(
-                result=None,
-                error=f"Command timed out after {self.timeout_seconds}s",
-            )
-        except (OSError, subprocess.SubprocessError, ValueError) as e:
-            return ToolResult(
-                result=None,
-                error=f"Bash execution failed: {e}",
-            )
+        except asyncio.CancelledError:
+            await self._kill(proc)
+            raise
+
+        return ToolResult(
+            error=None,
+            result=(
+                "Executed command successfully\n\n"
+                "<output>\n"
+                f"{stdout.decode(errors='replace')}{stderr.decode(errors='replace')}"
+                "</output>"
+            ),
+        )
+
+    @staticmethod
+    async def _kill(proc: asyncio.subprocess.Process) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()

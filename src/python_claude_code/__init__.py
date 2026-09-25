@@ -1,3 +1,5 @@
+import asyncio
+
 import anthropic
 from anthropic.types import MessageParam
 from dotenv import load_dotenv
@@ -7,7 +9,7 @@ from .tools import AgentToolRuntime, Bash, Edit, ReadFile, Write
 
 load_dotenv()
 
-client = anthropic.Anthropic()
+client = anthropic.AsyncAnthropic()
 model = "claude-haiku-4-5-20251001"
 
 
@@ -15,10 +17,10 @@ messages: list[MessageParam] = []
 agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
 
 
-def main() -> None:
+async def amain() -> None:
     print("Type 'exit' or 'quit' to stop.")
     while True:
-        user_input = input("\nYou: ").strip()
+        user_input = (await asyncio.to_thread(input, "\nYou: ")).strip()
         if user_input.lower() in {"exit", "quit"}:
             break
         if not user_input:
@@ -27,7 +29,7 @@ def main() -> None:
         messages.append({"role": "user", "content": user_input})
 
         while True:
-            tool_loop_result = run_loop(
+            tool_loop_result = await run_loop(
                 client=client,
                 model=model,
                 messages=messages,
@@ -43,3 +45,7 @@ def main() -> None:
                 if tool_loop_result.text:
                     print(f"\nAssistant: {tool_loop_result.text}")
                 break
+
+
+def main() -> None:
+    asyncio.run(amain())

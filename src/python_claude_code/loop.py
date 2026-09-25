@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, cast
 
-from anthropic import Client
+from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam, ToolResultBlockParam
 
 from .tools import AgentToolRuntime
@@ -14,13 +14,13 @@ class ToolLoopResult:
     tool_results: list[ToolResultBlockParam] | None = None
 
 
-def run_loop(
-    client: Client,
+async def run_loop(
+    client: AsyncAnthropic,
     model: str,
     messages: list[MessageParam],
     tool_runtime: AgentToolRuntime,
 ) -> ToolLoopResult:
-    response = client.messages.create(
+    response = await client.messages.create(
         model=model,
         max_tokens=8192,
         messages=messages,
@@ -41,7 +41,7 @@ def run_loop(
             if block.type != "tool_use":
                 continue
             print(f"Tool Call: {block.name}:{block.input}")
-            tool_result = tool_runtime.run_tool(
+            tool_result = await tool_runtime.run_tool(
                 block.name, cast(dict[str, Any], block.input)
             )
             tool_responses.append(
