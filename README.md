@@ -8,6 +8,20 @@ A simple AI coding agent written in Python. Read / Write / Edit / Bash
 uv sync
 ```
 
+## Configuration
+
+Before running the agent, you need to set up your environment:
+
+1. Copy the example environment file:
+```bash
+cp .env.example .env
+```
+
+2. Open `.env` and set your API key:
+```
+ANTHROPIC_API_KEY=your_api_key_here
+```
+
 ## Usage
 
 Run the CLI with:

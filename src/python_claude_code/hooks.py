@@ -1,7 +1,12 @@
+import difflib
 from collections.abc import Awaitable
 from typing import Any, Literal, Protocol
 
 from anthropic.types import ToolUseBlock
+from rich import print
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.syntax import Syntax
 
 from .tools import ToolResult
 
@@ -33,9 +38,11 @@ class OnToolResultHook(Protocol):
 type AnyHook = OnModelResponseHook | OnToolCallHook | OnToolResultHook
 
 
-async def print_llm_response(*, text: str) -> None:
+async def print_llm_response(*, text: str):
     if text:
-        print(f"\nAssistant: {text}")
+        print()
+        print(Markdown(f"Assistant: {text}"))
+        print()
 
 
 async def print_tool_call(*, call: ToolUseBlock) -> None:
@@ -47,6 +54,37 @@ async def print_tool_result(
     result: ToolResult,
     call_name: str,
     call_args: dict[str, Any],
-) -> None:
-    status = "✓" if not result.error else "✗"
-    print(f"{status} {call_name}: {call_args}")
+):
+    edit_names = {"edit"}
+    if call_name.lower() in edit_names:
+        old_str = str(call_args.get("old_str", ""))
+        new_str = str(call_args.get("new_str", ""))
+        path = str(call_args.get("filepath", "<unknown>"))
+        print(f"[bold]Edit[/bold] {path}")
+
+        if old_str or new_str:
+            diff_text = "\n".join(
+                difflib.unified_diff(
+                    old_str.splitlines(),
+                    new_str.splitlines(),
+                    fromfile=f"{path} (before)",
+                    tofile=f"{path} (after)",
+                    lineterm="",
+                )
+            )
+            if diff_text:
+                print(
+                    Panel(
+                        Syntax(
+                            diff_text,
+                            "diff",
+                            line_numbers=True,
+                            word_wrap=False,
+                        ),
+                        title=f"Diff preview: {path}",
+                        border_style="cyan",
+                    )
+                )
+        return
+    status = "[green]✓[/green]" if not result.error else "[red]✗[/red]"
+    print(f"{status} [bold]{call_name}[/bold] {call_args}")
