@@ -4,6 +4,7 @@ from anthropic.types import MessageParam
 from dotenv import load_dotenv
 
 from .agent import Agent
+from .hooks import print_llm_response, print_tool_call, print_tool_result
 from .tools import AgentToolRuntime, Bash, Edit, ReadFile, Write
 
 load_dotenv()
@@ -27,4 +28,9 @@ def main() -> None:
     messages: list[MessageParam] = []
     agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
     agent = Agent(agent_tool_runtime)
+    # register hooks
+    agent.on("on_model_response", print_llm_response)
+    agent.on("on_tool_call", print_tool_call)
+    agent.on("on_tool_result", print_tool_result)
+
     asyncio.run(amain(agent, messages))

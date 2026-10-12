@@ -68,12 +68,11 @@ class Agent:
 
     async def execute_tool(self, block: ToolUseBlock) -> ToolResultBlockParam:
         """Run one tool call and build its tool_result block."""
-        print(f"Tool Call: {block.name}:{block.input}")
+
         await self.emit("on_tool_call", call=block)
         tool_result = await self.tool_runtime.run_tool(
             block.name, cast(dict[str, Any], block.input)
         )
-        print(f"tool result: {tool_result}")
         await self.emit(
             "on_tool_result",
             result=tool_result,
@@ -99,11 +98,11 @@ class Agent:
             "content": cast(Any, response.content),
         }
 
-        await self.emit("on_model_response", message=assistant_message)
-
         text = "\n".join(
             block.text for block in response.content if block.type == "text"
         )
+
+        await self.emit("on_model_response", text=text)
 
         # Check for and handle model tool use
         if response.stop_reason == "tool_use":
@@ -131,6 +130,4 @@ class Agent:
                     {"role": "user", "content": tool_loop_result.tool_results}
                 )
             else:
-                if tool_loop_result.text:
-                    print(f"\nAssistant: {tool_loop_result.text}")
                 break
