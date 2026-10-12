@@ -175,15 +175,21 @@ async def test_execute_tool_builds_tool_result_block():
     assert "Unknown tool 'Nope'" in unknown["content"]
 
 
-async def test_loop_runs_tools_until_the_model_finishes(capsys):
+async def test_loop_runs_tools_until_the_model_finishes():
     client = FakeClient(
         [tool_block("t1", "Echo", {"text": "a"})],
         "tool_use",
         then=[([text_block("all done")], "end_turn")],
     )
     messages = [{"role": "user", "content": "go"}]
+    seen_text: list[str] = []
 
-    await Agent(runtime, model="m", client=client).loop(messages)
+    async def spy(*, text: str) -> None:
+        seen_text.append(text)
+
+    agent = Agent(runtime, model="m", client=client)
+    agent.on("on_model_response", spy)
+    await agent.loop(messages)
 
     assert len(client.calls) == 2
     assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
@@ -193,7 +199,7 @@ async def test_loop_runs_tools_until_the_model_finishes(capsys):
     assert messages[3]["content"][0].text == "all done"
     # The second request must include the tool results from the first turn.
     assert client.calls[1]["messages"][-1] == messages[2]
-    assert "Assistant: all done" in capsys.readouterr().out
+    assert seen_text == ["", "all done"]
 
 
 async def test_loop_chains_multiple_tool_rounds():
@@ -221,3 +227,63 @@ async def test_loop_without_tools_makes_one_call():
 
     assert len(client.calls) == 1
     assert [m["role"] for m in messages] == ["user", "assistant"]
+
+
+async def test_execute_tool_emits_call_and_result_hooks():
+    seen: list[tuple[Any, ...]] = []
+
+    async def on_call(*, call: Any) -> None:
+        seen.append(("call", call.name, call.input))
+
+    async def on_result(
+        *, result: Any, call_name: str, call_args: dict[str, Any]
+    ) -> None:
+        seen.append(("result", call_name, call_args, result.result, result.error))
+
+    agent = Agent(runtime, client=FakeClient([], "end_turn"))
+    agent.on("on_tool_call", on_call)
+    agent.on("on_tool_result", on_result)
+
+    await agent.execute_tool(tool_block("t1", "Echo", {"text": "a"}))
+
+    assert seen == [
+        ("call", "Echo", {"text": "a"}),
+        ("result", "Echo", {"text": "a"}, "echo:a", None),
+    ]
+
+
+async def test_on_registers_multiple_handlers_for_same_event():
+    calls: list[str] = []
+
+    async def first(**_: Any) -> None:
+        calls.append("first")
+
+    async def second(**_: Any) -> None:
+        calls.append("second")
+
+    agent = Agent(runtime, client=FakeClient([], "end_turn"))
+    agent.on("on_tool_call", first)
+    agent.on("on_tool_call", second)
+
+    await agent.execute_tool(tool_block("t1", "Echo", {"text": "a"}))
+
+    assert calls == ["first", "second"]
+
+
+async def test_emit_isolates_hook_exceptions():
+    calls: list[str] = []
+
+    async def bad(**_: Any) -> None:
+        raise RuntimeError("boom")
+
+    async def good(**_: Any) -> None:
+        calls.append("good")
+
+    agent = Agent(runtime, client=FakeClient([], "end_turn"))
+    agent.on("on_tool_call", bad)
+    agent.on("on_tool_call", good)
+
+    result = await agent.execute_tool(tool_block("t1", "Echo", {"text": "a"}))
+
+    assert calls == ["good"]
+    assert result == {"type": "tool_result", "tool_use_id": "t1", "content": "echo:a"}
