@@ -1,10 +1,17 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast, overload
 
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
 
+from .hooks import (
+    AnyHook,
+    HookType,
+    OnModelResponseHook,
+    OnToolCallHook,
+    OnToolResultHook,
+)
 from .tools import AgentToolRuntime
 
 
@@ -27,14 +34,52 @@ class Agent:
         self.model = model
         self.client = client if client is not None else AsyncAnthropic()
         self.max_tokens = max_tokens
+        self._hooks: dict[HookType, list[AnyHook]] = {
+            "on_model_response": [],
+            "on_tool_call": [],
+            "on_tool_result": [],
+        }
+
+    @overload
+    def on(
+        self, event: Literal["on_model_response"], handler: OnModelResponseHook
+    ) -> "Agent": ...
+
+    @overload
+    def on(
+        self, event: Literal["on_tool_call"], handler: OnToolCallHook
+    ) -> "Agent": ...
+
+    @overload
+    def on(
+        self, event: Literal["on_tool_result"], handler: OnToolResultHook
+    ) -> "Agent": ...
+
+    def on(self, event: HookType, handler: AnyHook) -> "Agent":
+        self._hooks[event].append(handler)
+        return self
+
+    async def emit(self, event: HookType, **kwargs: Any) -> None:
+        for handler in self._hooks[event]:
+            try:
+                await handler(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - isolate hook failures so one broken handler can't take down the loop
+                print(f"[Hook Error] Event '{event}' failed: {exc}")
 
     async def execute_tool(self, block: ToolUseBlock) -> ToolResultBlockParam:
         """Run one tool call and build its tool_result block."""
         print(f"Tool Call: {block.name}:{block.input}")
+        await self.emit("on_tool_call", call=block)
         tool_result = await self.tool_runtime.run_tool(
             block.name, cast(dict[str, Any], block.input)
         )
         print(f"tool result: {tool_result}")
+        await self.emit(
+            "on_tool_result",
+            result=tool_result,
+            call_name=block.name,
+            call_args=block.input,
+        )
         return {
             "type": "tool_result",
             "tool_use_id": block.id,
@@ -53,6 +98,8 @@ class Agent:
             "role": "assistant",
             "content": cast(Any, response.content),
         }
+
+        await self.emit("on_model_response", message=assistant_message)
 
         text = "\n".join(
             block.text for block in response.content if block.type == "text"
