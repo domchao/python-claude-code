@@ -5,6 +5,7 @@ from typing import Any, Literal, Protocol
 from anthropic.types import ToolUseBlock
 from rich import print
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -53,13 +54,38 @@ async def print_llm_response(*, text: str):
         print()
 
 
-async def print_llm_streaming_text(*, text: str):
-    if text:
-        console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+class StreamingMarkdownPrinter:
+    """Renders streamed text deltas as live-updating Markdown.
 
+    Register `on_delta` for "on_text_delta" and `on_done` for "on_model_response".
+    """
 
-async def print_newline(*, text: str):
-    console.print()
+    def __init__(self, console: Console) -> None:
+        self._console = console
+        self._buffer = ""
+        self._live: Live | None = None
+
+    async def on_delta(self, *, text: str) -> None:
+        if not text:
+            return
+        if self._live is None:
+            self._live = Live(
+                console=self._console,
+                refresh_per_second=8,
+                vertical_overflow="visible",
+            )
+            self._live.start()
+        self._buffer += text
+        self._live.update(Markdown(self._buffer))
+
+    async def on_done(self, *, text: str) -> None:
+        # Tool-only turns stream no text, so there is nothing to finish.
+        if self._live is None:
+            return
+        self._live.update(Markdown(self._buffer))
+        self._live.stop()
+        self._live = None
+        self._buffer = ""
 
 
 async def print_tool_call(*, call: ToolUseBlock) -> None:

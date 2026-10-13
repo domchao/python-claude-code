@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 
 from .agent import Agent
 from .hooks import (
-    print_llm_streaming_text,
-    print_newline,
+    StreamingMarkdownPrinter,
+    console,
     print_tool_call,
     print_tool_result,
 )
@@ -16,7 +16,6 @@ load_dotenv()
 
 
 async def amain(agent: Agent, messages: list[MessageParam]) -> None:
-    print("Type 'exit' or 'quit' to stop.")
     while True:
         user_input = (await asyncio.to_thread(input, "\nYou: ")).strip()
         if user_input.lower() in {"exit", "quit"}:
@@ -34,9 +33,11 @@ def main() -> None:
     agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
     agent = Agent(agent_tool_runtime)
     # register hooks
-    agent.on("on_model_response", print_newline)
-    agent.on("on_text_delta", print_llm_streaming_text)
+    printer = StreamingMarkdownPrinter(console)
+    agent.on("on_text_delta", printer.on_delta)
+    agent.on("on_model_response", printer.on_done)
     agent.on("on_tool_call", print_tool_call)
     agent.on("on_tool_result", print_tool_result)
 
+    print("Type 'exit' or 'quit' to stop.")
     asyncio.run(amain(agent, messages))
