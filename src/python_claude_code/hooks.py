@@ -4,20 +4,28 @@ from typing import Any, Literal, Protocol
 
 from anthropic.types import ToolUseBlock
 from rich import print
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 
 from .tools import ToolResult
 
+console = Console()
+
 type HookType = Literal[
     "on_model_response",
+    "on_text_delta",
     "on_tool_call",
     "on_tool_result",
 ]
 
 
 class OnModelResponseHook(Protocol):
+    def __call__(self, *, text: str) -> Awaitable[None]: ...
+
+
+class OnTextDeltaHook(Protocol):
     def __call__(self, *, text: str) -> Awaitable[None]: ...
 
 
@@ -35,7 +43,7 @@ class OnToolResultHook(Protocol):
     ) -> Awaitable[None]: ...
 
 
-type AnyHook = OnModelResponseHook | OnToolCallHook | OnToolResultHook
+type AnyHook = OnModelResponseHook | OnTextDeltaHook | OnToolCallHook | OnToolResultHook
 
 
 async def print_llm_response(*, text: str):
@@ -43,6 +51,15 @@ async def print_llm_response(*, text: str):
         print()
         print(Markdown(f"Assistant: {text}"))
         print()
+
+
+async def print_llm_streaming_text(*, text: str):
+    if text:
+        console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+
+
+async def print_newline(*, text: str):
+    console.print()
 
 
 async def print_tool_call(*, call: ToolUseBlock) -> None:

@@ -9,6 +9,7 @@ from .hooks import (
     AnyHook,
     HookType,
     OnModelResponseHook,
+    OnTextDeltaHook,
     OnToolCallHook,
     OnToolResultHook,
 )
@@ -36,6 +37,7 @@ class Agent:
         self.max_tokens = max_tokens
         self._hooks: dict[HookType, list[AnyHook]] = {
             "on_model_response": [],
+            "on_text_delta": [],
             "on_tool_call": [],
             "on_tool_result": [],
         }
@@ -43,6 +45,11 @@ class Agent:
     @overload
     def on(
         self, event: Literal["on_model_response"], handler: OnModelResponseHook
+    ) -> "Agent": ...
+
+    @overload
+    def on(
+        self, event: Literal["on_text_delta"], handler: OnTextDeltaHook
     ) -> "Agent": ...
 
     @overload
@@ -86,12 +93,16 @@ class Agent:
         }
 
     async def step(self, messages: list[MessageParam]) -> ToolLoopResult:
-        response = await self.client.messages.create(
+        async with self.client.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
             messages=messages,
             tools=self.tool_runtime.tool_specs,
-        )
+        ) as stream:
+            async for text in stream.text_stream:
+                await self.emit("on_text_delta", text=text)
+
+            response = await stream.get_final_message()
 
         assistant_message: MessageParam = {
             "role": "assistant",

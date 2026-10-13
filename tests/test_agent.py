@@ -41,11 +41,41 @@ def tool_block(id: str, name: str, input: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(type="tool_use", id=id, name=name, input=input)
 
 
-class FakeClient:
-    """Stands in for anthropic.AsyncAnthropic; returns a canned response and records calls.
+class FakeStream:
+    """Stands in for the object yielded by `client.messages.stream(...)`."""
 
-    Pass `then=[...]` to script later responses as (content, stop_reason) pairs;
-    the last response repeats once the script runs out.
+    def __init__(self, response: SimpleNamespace, deltas: list[str]):
+        self._response = response
+        self._deltas = deltas
+        self.text_stream = self._text_stream()
+
+    async def _text_stream(self):
+        for delta in self._deltas:
+            yield delta
+
+    async def get_final_message(self) -> SimpleNamespace:
+        return self._response
+
+
+class FakeStreamManager:
+    """Async context manager returned (synchronously) by `messages.stream(...)`."""
+
+    def __init__(self, stream: FakeStream):
+        self._stream = stream
+
+    async def __aenter__(self) -> FakeStream:
+        return self._stream
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class FakeClient:
+    """Stands in for anthropic.AsyncAnthropic; streams a canned response and records calls.
+
+    Text deltas default to one per text block; pass `deltas=[...]` to override them
+    for the first response. Pass `then=[...]` to script later responses as
+    (content, stop_reason) pairs; the last response repeats once the script runs out.
     """
 
     def __init__(
@@ -53,6 +83,7 @@ class FakeClient:
         content: list[SimpleNamespace],
         stop_reason: str,
         then: list[tuple[list[SimpleNamespace], str]] | None = None,
+        deltas: list[str] | None = None,
     ):
         self.calls: list[dict[str, Any]] = []
         self._responses = [
@@ -60,13 +91,19 @@ class FakeClient:
             for c, r in [(content, stop_reason), *(then or [])]
         ]
         self._response = self._responses[0]
-        self.messages = SimpleNamespace(create=self._create)
+        self._first_deltas = deltas
+        self.messages = SimpleNamespace(stream=self._stream)
 
-    async def _create(self, **kwargs: Any) -> SimpleNamespace:
+    def _stream(self, **kwargs: Any) -> FakeStreamManager:
         # Record a snapshot: the agent mutates the messages list between calls.
         self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
         index = min(len(self.calls), len(self._responses)) - 1
-        return self._responses[index]
+        response = self._responses[index]
+        if index == 0 and self._first_deltas is not None:
+            deltas = self._first_deltas
+        else:
+            deltas = [b.text for b in response.content if b.type == "text"]
+        return FakeStreamManager(FakeStream(response, deltas))
 
 
 runtime = AgentToolRuntime(tools=[Echo, Fail, Sleepy])
@@ -88,12 +125,86 @@ async def test_request_passes_model_messages_and_tools():
     client = FakeClient([text_block("hi")], "end_turn")
     messages = [{"role": "user", "content": "hello"}]
 
-    await Agent(runtime, model="test-model", client=client).step(messages)
+    await Agent(runtime, model="test-model", max_tokens=123, client=client).step(
+        messages
+    )
 
     (call,) = client.calls
     assert call["model"] == "test-model"
+    assert call["max_tokens"] == 123
     assert call["messages"] == messages
     assert call["tools"] == runtime.tool_specs
+
+
+async def test_text_deltas_are_emitted_in_order_before_model_response():
+    client = FakeClient(
+        [text_block("Hello world")], "end_turn", deltas=["Hel", "lo ", "world"]
+    )
+    events: list[tuple[str, str]] = []
+
+    async def on_delta(*, text: str) -> None:
+        events.append(("delta", text))
+
+    async def on_response(*, text: str) -> None:
+        events.append(("response", text))
+
+    agent = Agent(runtime, model="m", client=client)
+    agent.on("on_text_delta", on_delta)
+    agent.on("on_model_response", on_response)
+
+    result = await agent.step([])
+
+    assert events == [
+        ("delta", "Hel"),
+        ("delta", "lo "),
+        ("delta", "world"),
+        ("response", "Hello world"),
+    ]
+    assert result.text == "Hello world"
+
+
+async def test_tool_only_response_emits_no_deltas_but_still_emits_model_response():
+    client = FakeClient([tool_block("t1", "Echo", {"text": "a"})], "tool_use")
+    deltas: list[str] = []
+    responses: list[str] = []
+
+    async def on_delta(*, text: str) -> None:
+        deltas.append(text)
+
+    async def on_response(*, text: str) -> None:
+        responses.append(text)
+
+    agent = Agent(runtime, model="m", client=client)
+    agent.on("on_text_delta", on_delta)
+    agent.on("on_model_response", on_response)
+
+    result = await agent.step([])
+
+    assert deltas == []
+    assert responses == [""]
+    assert result.tool_results == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "echo:a"}
+    ]
+
+
+async def test_failing_delta_hook_does_not_break_streaming():
+    client = FakeClient([text_block("hi")], "end_turn", deltas=["h", "i"])
+    seen: list[str] = []
+
+    async def bad(**_: Any) -> None:
+        raise RuntimeError("boom")
+
+    async def good(*, text: str) -> None:
+        seen.append(text)
+
+    agent = Agent(runtime, model="m", client=client)
+    agent.on("on_text_delta", bad)
+    agent.on("on_text_delta", good)
+
+    result = await agent.step([])
+
+    assert seen == ["h", "i"]
+    assert result.text == "hi"
 
 
 async def test_tool_use_runs_tools_and_returns_results():

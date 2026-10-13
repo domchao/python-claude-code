@@ -4,7 +4,12 @@ from anthropic.types import MessageParam
 from dotenv import load_dotenv
 
 from .agent import Agent
-from .hooks import print_llm_response, print_tool_call, print_tool_result
+from .hooks import (
+    print_llm_streaming_text,
+    print_newline,
+    print_tool_call,
+    print_tool_result,
+)
 from .tools import AgentToolRuntime, Bash, Edit, ReadFile, Write
 
 load_dotenv()
@@ -29,7 +34,8 @@ def main() -> None:
     agent_tool_runtime = AgentToolRuntime(tools=[ReadFile, Write, Edit, Bash])
     agent = Agent(agent_tool_runtime)
     # register hooks
-    agent.on("on_model_response", print_llm_response)
+    agent.on("on_model_response", print_newline)
+    agent.on("on_text_delta", print_llm_streaming_text)
     agent.on("on_tool_call", print_tool_call)
     agent.on("on_tool_result", print_tool_result)
 
