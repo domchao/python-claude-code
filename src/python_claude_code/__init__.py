@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from .agent import Agent
 from .hooks import (
     StreamingMarkdownPrinter,
+    approve_tool,
     console,
     print_tool_call,
     print_tool_result,
@@ -37,6 +38,7 @@ def main() -> None:
     agent.on("on_text_delta", printer.on_delta)
     agent.on("on_model_response", printer.on_done)
     agent.on("on_tool_call", print_tool_call)
+    agent.on("on_tool_call", approve_tool)
     agent.on("on_tool_result", print_tool_result)
 
     print("Type 'exit' or 'quit' to stop.")

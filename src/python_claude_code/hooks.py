@@ -1,5 +1,7 @@
+import asyncio
 import difflib
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from anthropic.types import ToolUseBlock
@@ -30,8 +32,13 @@ class OnTextDeltaHook(Protocol):
     def __call__(self, *, text: str) -> Awaitable[None]: ...
 
 
+@dataclass(frozen=True)
+class Veto:
+    reason: str = "User denied this tool call"
+
+
 class OnToolCallHook(Protocol):
-    def __call__(self, *, call: ToolUseBlock) -> Awaitable[None]: ...
+    def __call__(self, *, call: ToolUseBlock) -> Awaitable[Veto | None]: ...
 
 
 class OnToolResultHook(Protocol):
@@ -90,6 +97,19 @@ class StreamingMarkdownPrinter:
 
 async def print_tool_call(*, call: ToolUseBlock) -> None:
     print(f"Tool Call: {call.name}:{call.input}")
+
+
+_approval_lock = asyncio.Lock()
+
+
+async def approve_tool(*, call: ToolUseBlock) -> Veto | None:
+    if call.name not in {"Bash", "Edit"}:
+        return None
+    async with _approval_lock:
+        answer = await asyncio.to_thread(input, f"Allow {call.name}? [y/N] ")
+    if answer.strip().lower() not in {"y", "yes"}:
+        return Veto()
+    return None
 
 
 async def print_tool_result(

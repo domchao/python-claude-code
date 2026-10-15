@@ -12,6 +12,7 @@ from .hooks import (
     OnTextDeltaHook,
     OnToolCallHook,
     OnToolResultHook,
+    Veto,
 )
 from .tools import AgentToolRuntime
 
@@ -66,17 +67,27 @@ class Agent:
         self._hooks[event].append(handler)
         return self
 
-    async def emit(self, event: HookType, **kwargs: Any) -> None:
+    async def emit(self, event: HookType, **kwargs: Any) -> Veto | None:
         for handler in self._hooks[event]:
             try:
-                await handler(**kwargs)
+                result = await handler(**kwargs)
             except Exception as exc:  # noqa: BLE001 - isolate hook failures so one broken handler can't take down the loop
                 print(f"[Hook Error] Event '{event}' failed: {exc}")
+                continue
+            if isinstance(result, Veto):
+                return result  # short-circuit: later hooks don't run
 
     async def execute_tool(self, block: ToolUseBlock) -> ToolResultBlockParam:
         """Run one tool call and build its tool_result block."""
 
-        await self.emit("on_tool_call", call=block)
+        veto = await self.emit("on_tool_call", call=block)
+        if veto:
+            return {
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": f"Tool call denied: {veto.reason}",
+                "is_error": True,
+            }
         tool_result = await self.tool_runtime.run_tool(
             block.name, cast(dict[str, Any], block.input)
         )
